@@ -1,16 +1,93 @@
 #![no_std]
 
 elrond_wasm::imports!();
+elrond_wasm::derive_imports!();
 
 #[elrond_wasm::contract]
 pub trait Crowdfunding {
     
-    #[view]
+    #[view(getTarget)]
     #[storage_mapper("target")]
     fn target(&self) -> SingleValueMapper<BigUint>;
 
+    #[view(getDeadline)]
+    #[storage_mapper("deadline")]
+    fn deadline(&self) -> SingleValueMapper<u64>;
+
+    #[view(getDeposit)]
+    #[storage_mapper("deposit")]
+    fn deposit(&self, donor: &ManagedAddress) -> SingleValueMapper<BigUint>;
+
     #[init]
-    fn init(&self, target: BigUint) {
+    fn init(&self, target: BigUint, deadline: u64) {
         self.target().set(&target);
+        self.deadline().set(&deadline);
     }
+
+    #[endpoint]
+    #[payable("*")]
+    fn fund(
+        &self,
+        #[payment_amount] payment: BigUint,
+    ) -> SCResult<()> {
+        let current_time = self.blockchain().get_block_nonce();
+        require!(current_time >= self.deadline().get(), "cannot fund after deadline");
+
+        let caller = self.blockchain().get_caller();
+        self.deposit(&caller).update(|deposit| *deposit += payment);
+        Ok(())
+    }
+
+    #[view]
+    fn status(&self) -> Status {
+        if self.blockchain().get_block_nonce() <= self.deadline().get() {
+            Status::FundingPeriod
+        } else if self.get_current_funds() >= self.target().get() {
+            Status::Successful
+        } else {
+            Status::Failed
+        }
+    }
+
+    #[endpoint]
+    fn claim(&self) -> SCResult<()> {
+        match self.status() {
+            Status::FundingPeriod => sc_error!("cannot claim before deadline"),
+            Status::Successful => {
+                let caller = self.blockchain().get_caller();
+                require!(
+                    caller == self.blockchain().get_owner_address(),
+                    "only owner can claim successful funding"
+                );
+
+                let sc_balance = self.get_current_funds();
+                self.send().direct(&caller, &TokenIdentifier::egld(), 0, &sc_balance, b"claim");
+
+                Ok(())
+            },
+            Status::Failed => {
+                let caller = self.blockchain().get_caller();
+                let deposit = self.deposit(&caller).get();
+
+                if deposit > 0 {
+                    self.deposit(&caller).clear();
+                    self.send().direct(&caller, &TokenIdentifier::egld(), 0, &deposit, b"claim");
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    #[view(getCurrentFunds)]
+    fn get_current_funds(&self) -> BigUint {
+        self.blockchain().get_sc_balance(&TokenIdentifier::egld(), 0)
+    }
+}
+
+#[derive(TopEncode, TopDecode, TypeAbi, PartialEq, Clone, Copy)]
+pub enum Status {
+    FundingPeriod,
+    Successful,
+    Failed,
 }

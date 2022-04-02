@@ -7,6 +7,13 @@
 elrond_wasm_node::wasm_endpoints! {
     crowdfunding
     (
+        claim
+        fund
+        getCurrentFunds
+        getDeadline
+        getDeposit
+        getTarget
+        status
     )
 }
 
